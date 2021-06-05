@@ -1,12 +1,35 @@
 
 contract CardsNFT =
 
+    record icon_data = {
+        data1: int,
+        data2: int,
+        data3: int,
+        data4: int
+     }
+    record indicated_data = {
+        indicator1: int,
+        indicator2: int,
+        indicator3: int
+        }
+    record card_details = {
+        id: bytes(32),
+        rarity: string,
+        series: string,
+        background_img: string,
+        hero_img: string,
+        effects: string,
+        title: string,
+        status: string,
+        description: string,
+        data: icon_data
+     }
     record state = {
         token_owner : map(bytes(32), address), 
         token_owns : map(address, int), 
         token_approvals: map(bytes(32), address),
         token_own_names: map(address, list(map(bytes(32), bool))), // true if that token is still holding
-        cards: map(string, list(map(bytes(32), address)))
+        cards: map(string, card_details)
         }
 
 
