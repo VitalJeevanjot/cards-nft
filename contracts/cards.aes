@@ -1,4 +1,5 @@
-
+include "List.aes"
+// For wallet holders
 contract CardsNFT =
 
     record icon_data = {
@@ -12,8 +13,7 @@ contract CardsNFT =
         indicator2: int,
         indicator3: int
         }
-    record card_details = {
-        id: bytes(32),
+    record card_data = {
         rarity: string,
         series: string,
         background_img: string,
@@ -21,15 +21,23 @@ contract CardsNFT =
         effects: string,
         title: string,
         status: string,
-        description: string,
-        data: icon_data
+        description: string
+     }
+    
+    record card_details_all = {
+        icon_data : icon_data,
+        indicated_data : indicated_data,
+        card_details : card_data 
      }
     record state = {
         token_owner : map(bytes(32), address), 
-        token_owns : map(address, int), 
-        token_approvals: map(bytes(32), address),
-        token_own_names: map(address, list(map(bytes(32), bool))), // true if that token is still holding
-        cards: map(string, card_details)
+        token_approvals: map(bytes(32), list(address * int)), ///  int is number of parts of that token, can be set manually, Max 1000, Default 1, for now.
+        token_owns: map(address, list(bytes(32) * int)), // int is number of parts of that token, can be set manually, Max 1000, Default 1, for now, to tell how much it holds
+        cards: map(bytes(32), card_details_all),
+        wallet_init: map(address, bool) // free startup card for every wallet
+        // create new contract for each type ... aens_init: map(address, bool), // free startup card for every ae name holder
+        // create new contract for each type ... miner_init: map(address, bool), // free startup card for every miner
+        // create new contract for each type ... hackathon_init: map(address, bool) // free startup card for every hackathon winner
         }
 
 
@@ -37,24 +45,30 @@ contract CardsNFT =
         { token_owner = {},
             token_owns = {},
             token_approvals = {},
-            token_own_names = {},
-            cards = {}}
+            cards = {},
+            wallet_init = {}
+            // aens_init = {},
+            // miner_init = {},
+            // hackathon_init = {}
+            }
 
     // get owner
     public stateful entrypoint ownerOfToken(_token_id: bytes(32)) : option(address) =
         Map.lookup(_token_id, state.token_owner)
     
     // get approved for token
-    public stateful entrypoint approvedForToken(_token_id: bytes(32)) : option(address) =
-        Map.lookup(_token_id, state.token_approvals)
+    public stateful entrypoint approvedForToken(_token_id: bytes(32), approved_addr : address) : option(int) =
+        let addresses : map(address, int) = Map.from_list(state.token_approvals[_token_id])
+        Map.lookup(approved_addr, addresses)
+        // List.find((addr) => addr == approved_addr, Map.lookup_default(_token_id, addresses, []))
         
     // transfer token
-    public stateful entrypoint transfer (_to: address, _token_id: bytes(32)) =
+    public stateful entrypoint transfer (_to: address, _token_id: bytes(32), amount : int) =
         require(String.length(Bytes.to_str(_token_id)) >= 1, "Token Id required")
       
         clearApproval(Some(Call.caller), _token_id)
         removeTokenFrom(Call.caller, _token_id)
-        addTokenTo(_to, _token_id) 
+        addTokenTo(_to, _token_id, amount) 
         // Since reentrancy attacks not possible in sophia, so increment added first because of the below code effects but if there is another attack please feel free to suggest that i should put increment below decrement
         
         
@@ -68,36 +82,33 @@ contract CardsNFT =
           false
           
     // add operation
-    private stateful function addTokenTo(_to: address, _token_id: bytes(32)) =
+    private stateful function addTokenTo(_to: address, _token_id: bytes(32), amount : int) =
         require(String.length(Bytes.to_str(_token_id)) >= 1, "Token Id required")
 
         put(state{token_owner[_token_id] = _to})
         
-        let old_token_owns_value = Map.lookup(_to, state.token_owns)
-        if(old_token_owns_value == None)
-            put(state{token_owns[_to] = 1 })
-        else
-            put(state{token_owns[_to] = state.token_owns[_to] + 1})
-        put(state{token_own_names[_to] = [{[_token_id] = true}] })
+        put(state{token_owns[_to] @ tokens = (_token_id, amount) :: tokens })
         
     // remove operation
     private stateful function removeTokenFrom(_from: address, _token_id: bytes(32)): string =
         require(String.length(Bytes.to_str(_token_id)) >= 1, "Token Id required")
-        if((ownerOfToken(_token_id) == Some(_from)) || (approvedForToken(_token_id) == Some(_from)))
+        if((ownerOfToken(_token_id) == Some(_from)) || (approvedForToken(_token_id, Call.caller) >= Some(1)))
           Map.delete(_token_id, state.token_owner)
-          put(state{token_owns[_from] = state.token_owns[_from] - 1 })
-          put(state{token_own_names[Call.caller] = [{[_token_id] = false}] })
+          let tokens = Map.from_list(state.token_owns[_from])
+          Map.delete(_token_id, tokens)
+
+          put(state{token_owns[Call.caller] = Map.to_list(tokens) })
           "Done"
           
         else  
           "cannot done"
             
     // mint token
-    public stateful entrypoint mint(_token_id: bytes(32)) =
+    public stateful entrypoint mint(_token_id: bytes(32), shares: int) =
         require(String.length(Bytes.to_str(_token_id)) >= 1, "Token Id required")
         require(ownerOfToken(_token_id) == None, "Token id already exist")
 
-        addTokenTo(Call.caller, _token_id)
+        addTokenTo(Call.caller, _token_id, shares)
 
     // burn token
     public stateful entrypoint burn(_token_id: bytes(32)) =
@@ -107,16 +118,14 @@ contract CardsNFT =
         removeTokenFrom(Call.caller, _token_id)
     
     // approve someone (will have same rights as owner)
-    public stateful entrypoint approve(_to: address, _token_id: bytes(32)) =
+    public stateful entrypoint approve(_to: address, _token_id: bytes(32), amount : int) =
         require(String.length(Bytes.to_str(_token_id)) >= 1, "Token Id required")
         require(ownerOfToken(_token_id) == Some(Call.caller), "The owner is not you for this token id yet!.")
 
-        put(state{token_approvals[_token_id] = _to})
+        put(state{token_approvals[_token_id] @ token_approves = (_to, amount) :: token_approves})
     
-    // get caller's sum of current owned tokens
-    public entrypoint sumOfTokenOwns (): option(int) =
+    // get list of owned tokens
+    public entrypoint allTokensOwnedOrNotNow (holder: address) : option(list(bytes(32) * int)) = 
         Map.lookup(Call.caller, state.token_owns)
-    
-    // get list of tokens owner (true) or not have access to now (false)
-    public entrypoint allTokensOwnedOrNotNow () : option(list(map(bytes(32), bool))) = 
-        Map.lookup(Call.caller, state.token_own_names)
+
+// Add a transfer for free function if the contract address is approved by admin for future migrations to new contracts, if required.
